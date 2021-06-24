@@ -1,0 +1,21 @@
+FROM maven:3.6.3-openjdk-11 AS maven_build
+RUN useradd --uid 1000 javause
+USER 1000
+COPY pom.xml /build/
+COPY src /build/src/
+WORKDIR /build/
+USER root
+RUN mvn clean package
+RUN chmod 777 /build/target/*.jar
+USER 1000
+FROM openjdk
+RUN useradd --uid 1000 javause
+USER 1000
+ENV PORT 8080
+ENV ARTIFACT_NAME spring-boot.jar
+ARG JAR_FILE=/build/target/*.jar
+WORKDIR /app
+COPY --chown=1000 --from=maven_build  /build/target/*.jar /app/spring-boot.jar
+EXPOSE $PORT
+USER 1000
+ENTRYPOINT ["java", "-jar", "/app/spring-boot.jar"]

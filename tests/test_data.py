@@ -1,0 +1,2 @@
+TestData = {'org': 'ALM-Demo', 'repo': 'alm', 'environment_name': 'dev', 
+'team': 'almteam', 'repotest': 'testrepo', 'email': 'jdamobility@gmail.com', 'secret_name': 'testsecret', 'secret_value': 'testsecretvalue', 'branch': 'main', 'app_type': 'java', 'webapporg': 'ALM-Demo', 'webapprepo': 'javaappservice', 'webapp_name': 'alm-app-java-javaappservice-dev', 'functionapp_name': 'alm-func-java-javaappservice-dev', 'project_name': 'alm', 'geography': 'us', 'containerweb_name': 'alm-reactapppoc-dev'}

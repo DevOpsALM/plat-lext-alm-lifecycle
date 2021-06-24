@@ -1,0 +1,108 @@
+name: Stratosphere ALM Container Web App
+on:
+  push:
+    branches:
+      - main
+jobs:
+  build-and-publish:      
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GITHUB_REPO_NAME: "plat-lext-alm-lifecycle"
+      AZURE_DEPLOY_ENVIRONMENT: "dev"
+      AZURE_CONTAINER_WEB_APP_TYPE: "python"
+      AZURE_CLIENT_ID: "${{ secrets.STRATO_CLIENT_ID }}"
+      AZURE_CLIENT_SECRET: "${{ secrets.STRATO_CLIENT_SECRET }}"
+      ALM_CLIENT_ID: "${{ secrets.ALM_CLIENT_ID }}"
+      ALM_CLIENT_SECRET: "${{ secrets.ALM_CLIENT_SECRET }}"
+      AZURE_TENANT_ID: "${{ secrets.STRATO_TENANT_ID }}"
+      AZURE_CONTAINER_WEB_APP_NAME_PREFIX: 'alm-app'
+      AZURE_ACR_NAME_PREFIX: 'almacr'
+      STRATOSPHERE_API_URL: https://api.live.external.byp.ai
+      PROJECT_NAME: "alm"
+      GEOGRAPHY: "us"
+      AZURE_CONTAINER_WEB_APP_NAME: "testalmapi"
+      GITHUB_PAT: "${{secrets.GH_PAT}}"
+
+    steps:
+    - name: Set env
+      run: |
+        echo "AZURE_WEB_APP_SVC_PLAN=${AZURE_CONTAINER_WEB_APP_NAME_PREFIX}-${AZURE_CONTAINER_WEB_APP_TYPE}-${AZURE_DEPLOY_ENVIRONMENT}" >> $GITHUB_ENV
+        echo "AZURE_ACR_NAME=${AZURE_ACR_NAME_PREFIX}" >> $GITHUB_ENV
+        echo "AZURE_CONTAINER_WEB_APP_NAME=${AZURE_CONTAINER_WEB_APP_NAME}${AZURE_DEPLOY_ENVIRONMENT}" >> $GITHUB_ENV
+        echo "AZURE_CONTAINER_WEB_APP_IMAGE_NAME=${GITHUB_REPO_NAME}-${AZURE_DEPLOY_ENVIRONMENT}" >> $GITHUB_ENV
+    
+    - name: Checkout Code
+      uses: actions/checkout@v2
+
+    - name: Login to Azure
+      run: |
+        az login --service-principal --username $AZURE_CLIENT_ID --password $AZURE_CLIENT_SECRET --tenant $AZURE_TENANT_ID
+    - name: Set token
+      run: | 
+        RESPONSE=$(curl -s --request POST \
+        --url 'https://login.live.external.byp.ai/realms/Stratosphere/protocol/openid-connect/token' \
+        --header 'content-type: application/x-www-form-urlencoded' \
+        --data grant_type=client_credentials \
+        --data client_id=${{ env.ALM_CLIENT_ID }} \
+        --data client_secret=${{ env.ALM_CLIENT_SECRET }}) 
+        echo "STRATOSPHERE_ACCESS_TOKEN=$(echo $RESPONSE | jq -r '.access_token')" >> $GITHUB_ENV
+    - name: Create Azure Container Registry
+      run: |
+        curl -H "accept: application/json" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ env.STRATOSPHERE_ACCESS_TOKEN }}" \
+          --request PUT \
+          --data '{"spec": {"container_registry": {"access_policies": [{"name": "spn-alm", "type": "resource"},{"name": "grp-sec-saas-sub-lplat-test-reader", "type": "group"}]}}}' \
+          ${{ env.STRATOSPHERE_API_URL }}/geographies/${{ env.GEOGRAPHY }}/projects/${{ env.PROJECT_NAME }}/resources/azure-container-registry/${{ env.AZURE_ACR_NAME }} > temp.json
+          echo "AZURE_ACR_REPO_NAME=$(jq -r '.status.azure.resource_name' temp.json)" >> $GITHUB_ENV
+          AZURE_ACR_STATUS=`cat temp.json | jq -r '.status.state'`
+
+        while [ "$AZURE_ACR_STATUS" != 'deployed' ]
+        do
+        curl -H "accept: application/json" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ env.STRATOSPHERE_ACCESS_TOKEN }}" \
+          --request GET \
+          ${{ env.STRATOSPHERE_API_URL }}/geographies/${{ env.GEOGRAPHY }}/projects/${{ env.PROJECT_NAME }}/resources/azure-container-registry/${{ env.AZURE_ACR_NAME }} > temp.json 
+          AZURE_ACR_STATUS=`cat temp.json | jq -r '.status.state'`
+        done   
+   
+    - name: Get Timestamp
+      id: time
+      run: |
+        echo "AZURE_WEB_APP_IMAGE_TAG=$(date '+%Y-%m-%d-%H-%M-%S')" >> $GITHUB_ENV
+            
+    - name: Build Docker Image
+      run: |
+        sudo docker build . -f Dockerfile_nonroot --tag "$AZURE_ACR_REPO_NAME.azurecr.io/$AZURE_CONTAINER_WEB_APP_IMAGE_NAME:$AZURE_WEB_APP_IMAGE_TAG" --build-arg GITHUB_PAT=${{ env.GITHUB_PAT }} --build-arg ALM_CLIENT_ID=${{ env.ALM_CLIENT_ID }} --build-arg ALM_CLIENT_SECRET=${{ env.ALM_CLIENT_SECRET }}
+    - name: Tag Docker Image
+      run: |
+        sudo docker tag $AZURE_ACR_REPO_NAME.azurecr.io/$AZURE_CONTAINER_WEB_APP_IMAGE_NAME:$AZURE_WEB_APP_IMAGE_TAG $AZURE_ACR_REPO_NAME.azurecr.io/$AZURE_CONTAINER_WEB_APP_IMAGE_NAME:latest
+        
+    - name: Login to ACR
+      run: |
+        az acr login --name $AZURE_ACR_REPO_NAME
+    - name: Push Docker Images
+      run: |
+        docker push "$AZURE_ACR_REPO_NAME.azurecr.io/$AZURE_CONTAINER_WEB_APP_IMAGE_NAME:$AZURE_WEB_APP_IMAGE_TAG"
+        docker push "$AZURE_ACR_REPO_NAME.azurecr.io/$AZURE_CONTAINER_WEB_APP_IMAGE_NAME:latest"
+    - name: Create Stratosphere Container Web
+      run: |
+        curl -H "accept: application/json" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ env.STRATOSPHERE_ACCESS_TOKEN }}" \
+          --request PUT \
+          --data '{"spec": {"liveness_probe": {"initial_delay_seconds": 180,"path": "/api/v1/docs"},"enabled": true,"image": '\"${{ env.AZURE_ACR_REPO_NAME }}.azurecr.io/${{ env.AZURE_CONTAINER_WEB_APP_IMAGE_NAME }}:${{ env.AZURE_WEB_APP_IMAGE_TAG }}\"',"network": {"access": "external"},"authentication": {"enabled": true}}}' \
+          ${{ env.STRATOSPHERE_API_URL }}/geographies/${{ env.GEOGRAPHY }}/projects/${{ env.PROJECT_NAME }}/resources/container-web/${{ env.AZURE_CONTAINER_WEB_APP_NAME }} > temp.json
+          echo "CONTAINER_WEB_ENDPOINT_URL=$(jq -r '.links.endpoint.url' temp.json)" >> $GITHUB_ENV
+          AZURE_CONTAINER_WEB_STATUS=`cat temp.json | jq -r '.status.state'`
+        while [ "$AZURE_CONTAINER_WEB_STATUS" != 'deployed' ]
+        do
+        curl -H "accept: application/json" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ env.STRATOSPHERE_ACCESS_TOKEN }}" \
+          --request GET \
+          ${{ env.STRATOSPHERE_API_URL }}/geographies/${{ env.GEOGRAPHY }}/projects/${{ env.PROJECT_NAME }}/resources/container-web/${{ env.AZURE_CONTAINER_WEB_APP_NAME }} > temp.json
+          AZURE_CONTAINER_WEB_STATUS=`cat temp.json | jq -r '.status.state'`
+        done

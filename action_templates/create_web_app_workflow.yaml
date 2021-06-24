@@ -1,0 +1,101 @@
+name: Azure Web App
+on:
+  repository_dispatch:
+    types: create_web_app
+jobs:
+  create-web-app:      
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GITHUB_REPO_NAME: "${{ github.event.client_payload.repo }}"
+      AZURE_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION }}
+      AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      AZURE_DEPLOY_ENVIRONMENT: "${{ github.event.client_payload.environment }}"
+      AZURE_WEB_APP_TYPE: "${{ github.event.client_payload.app_type }}"
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: "${{ github.event.client_payload.tenant_id }}"
+      AZURE_WEB_APP_NAME_PREFIX: 'alm-app'
+      AZURE_WEB_APP_SKU: 'S1'
+      AZURE_WEB_APP_WORKERS: '4'
+      AZURE_ACR_NAME_PREFIX: 'almacr'
+      AZURE_ACR_SKU: 'Standard'
+      AZURE_ACR_ADMIN_ENABLED: true
+    steps:
+    - name: Set env
+      run: |
+        echo "AZURE_WEB_APP_SVC_PLAN=${AZURE_WEB_APP_NAME_PREFIX}-${AZURE_WEB_APP_TYPE}-${AZURE_DEPLOY_ENVIRONMENT}" >> $GITHUB_ENV
+        echo "AZURE_WEB_APP_NAME=${AZURE_WEB_APP_NAME_PREFIX}-${AZURE_WEB_APP_TYPE}-${GITHUB_REPO_NAME}-${AZURE_DEPLOY_ENVIRONMENT}" >> $GITHUB_ENV
+        echo "AZURE_ACR_NAME=${AZURE_ACR_NAME_PREFIX}${AZURE_DEPLOY_ENVIRONMENT}" >> $GITHUB_ENV
+        echo "AZURE_WEB_APP_IMAGE_NAME=${GITHUB_REPO_NAME}-${AZURE_DEPLOY_ENVIRONMENT}" >> $GITHUB_ENV
+    
+    - name: Checkout Code
+      uses: actions/checkout@v2
+
+    - name: Login to Azure
+      run: |
+        az login --service-principal --username $AZURE_CLIENT_ID --password $AZURE_CLIENT_SECRET --tenant $AZURE_TENANT_ID
+        
+    - name: Create Azure Container Registry
+      run: |
+        az acr create --resource-group $AZURE_RESOURCE_GROUP --name $AZURE_ACR_NAME --sku $AZURE_ACR_SKU --admin-enabled $AZURE_ACR_ADMIN_ENABLED
+    
+    - name: Create Azure App Service Plan
+      run: |
+        az appservice plan create --name $AZURE_WEB_APP_SVC_PLAN --resource-group $AZURE_RESOURCE_GROUP --is-linux --number-of-workers $AZURE_WEB_APP_WORKERS --sku $AZURE_WEB_APP_SKU
+    
+    - name: Get Timestamp
+      id: time
+      run: |
+        echo "AZURE_WEB_APP_IMAGE_TAG=$(date '+%Y-%m-%d-%H-%M-%S')" >> $GITHUB_ENV
+            
+    - name: Build Docker Image
+      run: |
+        docker build . --file ".github/docker/Dockerfile_$AZURE_WEB_APP_TYPE" --tag "$AZURE_ACR_NAME.azurecr.io/$AZURE_WEB_APP_IMAGE_NAME:$AZURE_WEB_APP_IMAGE_TAG"
+        
+    - name: Tag Docker Image
+      run: |
+        docker tag $AZURE_ACR_NAME.azurecr.io/$AZURE_WEB_APP_IMAGE_NAME:$AZURE_WEB_APP_IMAGE_TAG $AZURE_ACR_NAME.azurecr.io/$AZURE_WEB_APP_IMAGE_NAME:latest
+        
+    - name: Login to ACR
+      run: |
+        az acr login --name $AZURE_ACR_NAME
+
+    - name: Push Docker Images
+      run: |
+        docker push "$AZURE_ACR_NAME.azurecr.io/$AZURE_WEB_APP_IMAGE_NAME:$AZURE_WEB_APP_IMAGE_TAG"
+        docker push "$AZURE_ACR_NAME.azurecr.io/$AZURE_WEB_APP_IMAGE_NAME:latest"
+
+    - name: Create Azure Web App
+      run: |
+        az webapp create --resource-group $AZURE_RESOURCE_GROUP \
+        --plan $AZURE_WEB_APP_SVC_PLAN \
+        --name $AZURE_WEB_APP_NAME \
+        --deployment-container-image-name "$AZURE_ACR_NAME.azure.io/$AZURE_WEB_APP_IMAGE_NAME:$AZURE_WEB_APP_IMAGE_TAG"
+        
+    - name: Update Web App Container Settings
+      run: | 
+        az webapp config container set -n $AZURE_WEB_APP_NAME -g $AZURE_RESOURCE_GROUP --docker-custom-image-name $AZURE_ACR_NAME.azurecr.io/$AZURE_WEB_APP_IMAGE_NAME:$AZURE_WEB_APP_IMAGE_TAG --docker-registry-server-url https://$AZURE_ACR_NAME.azurecr.io --docker-registry-server-user $AZURE_ACR_NAME --docker-registry-server-password `az acr credential show -n $AZURE_ACR_NAME --query passwords[0].value -o tsv`
+
+    - name: Update Azure Web App Endpoints File
+      run: |
+        if [ ! -f .github/webapps/webapps.json ];then
+          mkdir -p .github/webapps
+          touch .github/webapps/webapps.json
+        fi
+        if [ ! -s .github/webapps/webapps.json ]; then
+          echo "{}" > .github/webapps/webapps.json
+        fi
+        export WEB_APP_URL=`az webapp config hostname list --webapp-name $AZURE_WEB_APP_NAME --resource-group $AZURE_RESOURCE_GROUP --query [].name -o tsv`
+        jq --arg webapp_name $AZURE_WEB_APP_NAME --arg resource_group $AZURE_RESOURCE_GROUP --arg webapp_url "https://$WEB_APP_URL" '. + {($webapp_name): {"resource_group": $resource_group, "webapp_url": $webapp_url}}' < .github/webapps/webapps.json > tmp_webapps.json && mv tmp_webapps.json .github/webapps/webapps.json
+        git config --global user.email "siva.medapati@blueyonder.com"
+        git config --global user.name "Siva Medapati"
+        git config pull.rebase false
+        git pull origin ${BRANCH}
+        git add -f .github/webapps/webapps.json
+        if [ -z "$(git status --porcelain)" ]; then 
+          echo "Nothing to commit"
+        else 
+          git commit -m "update webapp endpoint"
+          git push origin ${BRANCH}
+        fi

@@ -1,0 +1,36 @@
+name: ALM fastapi coverage workflow
+
+on:
+  push:
+    branches:
+      - develop
+env:
+  GITHUB_PAT: ${{ secrets.GH_PAT }}
+  ALM_CLIENT_ID: ${{ secrets.ALM_CLIENT_ID }}
+  ALM_CLIENT_SECRET: ${{ secrets.ALM_CLIENT_SECRET }}
+  STRATO_CLIENT_ID: ${{ secrets.STRATO_CLIENT_ID }}
+  STRATO_CLIENT_SECRET: ${{ secrets.STRATO_CLIENT_SECRET }}
+  STRATO_TENANT_ID: ${{ secrets.STRATO_TENANT_ID }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION }}
+  AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+jobs:
+  codacy-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: sandbox
+    steps:
+    - uses: actions/checkout@v2
+    - name: Run unit tests 
+      run: |
+        pip install -r requirements.txt
+        set +e
+        pytest --cov-report xml --cov=app tests
+        set -e
+    - name: Run codacy-coverage-reporter
+      uses: codacy/codacy-coverage-reporter-action@master
+      with:
+        project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
+        coverage-reports: coverage.xml

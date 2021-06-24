@@ -1,0 +1,40 @@
+name: Destroy Stratosphere Container Web App
+on:
+  repository_dispatch:
+    types: delete_stratosphere_container_web
+jobs:
+  delete-container-web-app:      
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AZURE_CONTAINER_WEB_APP_NAME: "${{ github.event.client_payload.webapp_name }}"
+      STRATOSPHERE_API_URL: https://api.live.external.byp.ai
+      PROJECT_NAME: "${{ github.event.client_payload.project_name }}"
+      GEOGRAPHY: "${{ github.event.client_payload.geography }}"
+      STRATOSPHERE_ACCESS_TOKEN: "${{ github.event.client_payload.stratospher_access_token }}"
+    steps:  
+    - name: Checkout Code
+      uses: actions/checkout@v2
+        
+    - name: Destroy Stratosphere Container Web
+      run: |
+        curl -H "accept: application/json" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ env.STRATOSPHERE_ACCESS_TOKEN }}" \
+          --request DELETE \
+          ${{ env.STRATOSPHERE_API_URL }}/geographies/${{ env.GEOGRAPHY }}/projects/${{ env.PROJECT_NAME }}/resources/container-web/${{ env.AZURE_CONTAINER_WEB_APP_NAME }}
+  
+    - name: Update Container Web App Endpoints File
+      run: |
+        jq --arg webapp_name $AZURE_CONTAINER_WEB_APP_NAME 'del(.[($webapp_name)])' < .github/contaierweb/contaierweb.json > tmp_webapps.json && mv tmp_webapps.json .github/contaierweb/contaierweb.json
+        git config --global user.email "siva.medapati@blueyonder.com"
+        git config --global user.name "Siva Medapati"
+        git config pull.rebase false
+        git pull origin ${BRANCH}
+        git add -f .github/contaierweb/contaierweb.json
+        if [ -z "$(git status --porcelain)" ]; then 
+          echo "Nothing to commit"
+        else 
+          git commit -m "update webapp endpoint"
+          git push origin ${BRANCH}
+        fi

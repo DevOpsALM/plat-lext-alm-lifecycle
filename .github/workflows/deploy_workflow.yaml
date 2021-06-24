@@ -1,0 +1,72 @@
+name: ALM fastapi deployment
+
+on:
+  push:
+    branches:
+      - develop
+env:
+  IMAGE: 'fastapi'
+  REMOTE_REGISTRY: 'https://almacr.azurecr.io'
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: sandbox
+    steps:
+    - uses: actions/checkout@v2
+    - name: Login to Azure
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    - name: Create appservice plan
+      run: |
+        az appservice plan create --name almfastapi \
+        --resource-group rsg-sbx003-npd-lmobile-sbx-001 \
+        --is-linux --number-of-workers 4 --sku S1
+    - name: Create container registry
+      run: |
+        az acr create --name almacr \
+        --resource-group rsg-sbx003-npd-lmobile-sbx-001 \
+        --sku Standard \
+        --admin-enabled true
+    - name: Login to ACR
+      run: |
+        az acr login --name almacr
+    - name: Get time stamp
+      id: time
+      run: |
+        echo "TAG=$(date '+%Y-%m-%d-%H-%M-%S')" >> $GITHUB_ENV
+    - run: |
+          echo "REMOTE_REGISTRY: ${REMOTE_REGISTRY}"
+          echo "REGISTRY=`echo "${REMOTE_REGISTRY}" | awk -F/ '{print $3}'`" >> $GITHUB_ENV
+          echo "$TAG"
+    - name: Build docker image
+      run: |
+        IMAGE_WITH_TAG="$IMAGE:$TAG"
+        echo "$REGISTRY/$IMAGE_WITH_TAG"
+        docker build -t $REGISTRY/$IMAGE_WITH_TAG --build-arg GITHUB_PAT=${{secrets.GH_PAT}} --build-arg ALM_CLIENT_ID=${{secrets.ALM_CLIENT_ID}} --build-arg ALM_CLIENT_SECRET=${{secrets.ALM_CLIENT_SECRET}} .
+        docker push $REGISTRY/$IMAGE_WITH_TAG
+        echo "IMAGE_WITH_TAG=$IMAGE:$TAG" >> $GITHUB_ENV
+    - name: Update webapp container settings
+      run: | 
+        az webapp config container set --name almfastapi \
+        --resource-group rsg-sbx003-npd-lmobile-sbx-001 \
+        --docker-custom-image-name "${{env.REGISTRY}}/${{env.IMAGE_WITH_TAG}}" \
+        --docker-registry-server-url $REMOTE_REGISTRY \
+        --docker-registry-server-user ${{secrets.ACR_USER}} \
+        --docker-registry-server-password ${{secrets.ACR_PASSWORD}}
+    # - name: Create azure webapp
+    #   run: |
+    #     az webapp create --name almfastapi \
+    #     --plan almfastapi \
+    #     --resource-group rsg-sbx003-npd-lmobile-sbx-001
+    #     --deployment-container-image-name "${{env.REGISTRY}}/${{env.IMAGE_WITH_TAG}}" \
+    #     --docker-registry-server-user {{secrets.ACR_USER}} \
+    #     --docker-registry-server-password ${{secrets.ACR_PASSWORD}}
+    # - name: Update app settings
+    #   run: |
+    #     az webapp config appsettings set --resource-group rsg-sbx003-npd-lmobile-sbx-001 \
+    #     --name almfastapi \
+    #     --settings DOCKER_REGISTRY_SERVER_URL="https://almacr.azurecr.io" \
+    #     DOCKER_REGISTRY_SERVER_USERNAME={{secrets.ACR_USER}} \
+    #     DOCKER_REGISTRY_SERVER_PASSWORD=${{secrets.ACR_PASSWORD}}

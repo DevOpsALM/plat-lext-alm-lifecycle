@@ -1,0 +1,41 @@
+name: Destroy Azure Web App
+on:
+  repository_dispatch:
+    types: delete_web_app
+jobs:
+  delete-web-app:      
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AZURE_WEB_APP_NAME: "${{ github.event.client_payload.webapp_name }}"
+      AZURE_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION }}
+      AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: "${{ github.event.client_payload.tenant_id }}"
+    steps:    
+    - name: Checkout Code
+      uses: actions/checkout@v2
+
+    - name: Login to Azure
+      run: |
+        az login --service-principal --username $AZURE_CLIENT_ID --password $AZURE_CLIENT_SECRET --tenant $AZURE_TENANT_ID
+
+    - name: Delete Azure Web App
+      run: |
+        az webapp delete --name $AZURE_WEB_APP_NAME --resource-group $AZURE_RESOURCE_GROUP
+
+    - name: Update Azure Web App Endpoints File
+      run: |
+        jq --arg webapp_name $AZURE_WEB_APP_NAME 'del(.[($webapp_name)])' < .github/webapps/webapps.json > tmp_webapps.json && mv tmp_webapps.json .github/webapps/webapps.json
+        git config --global user.email "siva.medapati@blueyonder.com"
+        git config --global user.name "Siva Medapati"
+        git config pull.rebase false
+        git pull origin ${BRANCH}
+        git add -f .github/webapps/webapps.json
+        if [ -z "$(git status --porcelain)" ]; then 
+          echo "Nothing to commit"
+        else 
+          git commit -m "update webapp endpoint"
+          git push origin ${BRANCH}
+        fi

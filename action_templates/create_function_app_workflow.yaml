@@ -1,0 +1,99 @@
+name: Azure function App
+on:
+  repository_dispatch:
+    types: create_function_app
+jobs:
+  create-function-app:      
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GITHUB_REPO_NAME: "${{ github.event.client_payload.repo }}"
+      AZURE_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION }}
+      AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      AZURE_DEPLOY_ENVIRONMENT: "${{ github.event.client_payload.environment }}"
+      AZURE_FUNCTION_APP_TYPE: "${{ github.event.client_payload.app_type }}"
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: "${{ github.event.client_payload.tenant_id }}"
+      AZURE_STORAGE_ACCOUNT_NAME: "${{ github.event.client_payload.storage_account_name }}"
+      AZURE_FUNCTION_APP_NAME_PREFIX: 'alm-func'
+      AZURE_STORAGE_ACCOUNT_NAME_PREFIX: 'almst'
+      AZURE_STORAGE_ACCOUNT_SKU: 'Standard_LRS'
+      AZURE_FUNCTION_APP_PLAN_SKU: 'EP1'
+      AZURE_FUNCTION_APP_WORKERS: '2'
+      AZURE_ACR_NAME_PREFIX: 'almacr'
+      AZURE_ACR_SKU: 'Standard'
+      LOCATION: 'eastus2'
+      AZURE_ACR_ADMIN_ENABLED: true
+    steps:
+    - name: Set env
+      run: |
+        echo "AZURE_FUNCTION_APP_PLAN=${AZURE_FUNCTION_APP_NAME_PREFIX}-${AZURE_FUNCTION_APP_TYPE}-${AZURE_DEPLOY_ENVIRONMENT}" >> $GITHUB_ENV
+        echo "AZURE_FUNCTION_APP_NAME=${AZURE_FUNCTION_APP_NAME_PREFIX}-${AZURE_FUNCTION_APP_TYPE}-${GITHUB_REPO_NAME}-${AZURE_DEPLOY_ENVIRONMENT}" >> $GITHUB_ENV
+        echo "AZURE_ACR_NAME=${AZURE_ACR_NAME_PREFIX}${AZURE_DEPLOY_ENVIRONMENT}" >> $GITHUB_ENV
+        echo "AZURE_FUNCTION_APP_IMAGE_NAME=${GITHUB_REPO_NAME}-${AZURE_DEPLOY_ENVIRONMENT}" >> $GITHUB_ENV
+        echo "AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT_NAME_PREFIX}${AZURE_STORAGE_ACCOUNT_NAME}" >> $GITHUB_ENV
+    
+    - name: Checkout Code
+      uses: actions/checkout@v2
+
+    - name: Login to Azure
+      run: |
+        az login --service-principal --username $AZURE_CLIENT_ID --password $AZURE_CLIENT_SECRET --tenant $AZURE_TENANT_ID
+        
+    - name: Create Azure Container Registry
+      run: |
+        az acr create --resource-group $AZURE_RESOURCE_GROUP --name $AZURE_ACR_NAME --sku $AZURE_ACR_SKU --admin-enabled $AZURE_ACR_ADMIN_ENABLED
+    
+    - name: Get Timestamp
+      id: time
+      run: |
+        echo "AZURE_FUNCTION_APP_IMAGE_TAG=$(date '+%Y-%m-%d-%H-%M-%S')" >> $GITHUB_ENV
+            
+    - name: Build Docker Image
+      run: |
+        docker build . --file ".github/docker/Dockerfile_$AZURE_FUNCTION_APP_TYPE" --tag "$AZURE_ACR_NAME.azurecr.io/$AZURE_FUNCTION_APP_IMAGE_NAME:$AZURE_FUNCTION_APP_IMAGE_TAG"
+        
+    - name: Tag Docker Image
+      run: |
+        docker tag $AZURE_ACR_NAME.azurecr.io/$AZURE_FUNCTION_APP_IMAGE_NAME:$AZURE_FUNCTION_APP_IMAGE_TAG $AZURE_ACR_NAME.azurecr.io/$AZURE_FUNCTION_APP_IMAGE_NAME:latest
+        
+    - name: Login to ACR
+      run: |
+        az acr login --name $AZURE_ACR_NAME
+
+    - name: Push Docker Images
+      run: |
+        docker push "$AZURE_ACR_NAME.azurecr.io/$AZURE_FUNCTION_APP_IMAGE_NAME:$AZURE_FUNCTION_APP_IMAGE_TAG"
+        docker push "$AZURE_ACR_NAME.azurecr.io/$AZURE_FUNCTION_APP_IMAGE_NAME:latest"
+    - name: Create Storage Account
+      run: |
+        az storage account create --name $AZURE_STORAGE_ACCOUNT --location $LOCATION --resource-group $AZURE_RESOURCE_GROUP --sku $AZURE_STORAGE_ACCOUNT_SKU
+    - name: Create Functionapp Plan
+      run: |
+        az functionapp plan create --resource-group $AZURE_RESOURCE_GROUP --name $AZURE_FUNCTION_APP_PLAN --location $LOCATION --number-of-workers $AZURE_FUNCTION_APP_WORKERS --sku $AZURE_FUNCTION_APP_PLAN_SKU --is-linux
+        
+    - name: Create Function app
+      run: |
+        az functionapp create --name $AZURE_FUNCTION_APP_NAME --storage-account $AZURE_STORAGE_ACCOUNT --resource-group $AZURE_RESOURCE_GROUP --plan $AZURE_FUNCTION_APP_PLAN --runtime custom  --deployment-container-image-name $AZURE_ACR_NAME.azurecr.io/$AZURE_FUNCTION_APP_IMAGE_NAME:latest
+    
+    - name: Update Azure Fnction App Endpoints File
+      run: |
+        if [ ! -f .github/functions/functions.json ];then
+          mkdir -p .github/functions
+          touch .github/functions/functions.json
+          echo "{}" > .github/functions/functions.json
+        fi
+        export WEB_APP_URL=`az functionapp config hostname list --webapp-name $AZURE_FUNCTION_APP_NAME --resource-group $AZURE_RESOURCE_GROUP --query [].name -o tsv`
+        jq --arg functionapp_name $AZURE_FUNCTION_APP_NAME --arg resource_group $AZURE_RESOURCE_GROUP --arg webapp_url "https://$WEB_APP_URL" '. + {($functionapp_name): {"resource_group": $resource_group, "webapp_url": $webapp_url}}' < .github/functions/functions.json > tmp_webapps.json && mv tmp_webapps.json .github/functions/functions.json
+        git config --global user.email "siva.medapati@blueyonder.com"
+        git config --global user.name "Siva Medapati"
+        git config pull.rebase false
+        git pull origin ${BRANCH}
+        git add -f .github/functions/functions.json
+        if [ -z "$(git status --porcelain)" ]; then 
+          echo "Nothing to commit"
+        else 
+          git commit -m "update functionapp endpoint"
+          git push origin ${BRANCH}
+        fi

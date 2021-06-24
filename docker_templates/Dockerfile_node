@@ -1,0 +1,9 @@
+FROM node:10-alpine
+RUN mkdir -p /app/node_modules && chown -R 1100:node /app
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+USER 1100
+COPY --chown=1100:node . .
+EXPOSE 8080
+CMD [ "node", "server.js" ]
