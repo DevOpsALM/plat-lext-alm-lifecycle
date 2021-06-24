@@ -22,7 +22,7 @@ jobs:
       PROJECT_NAME: "alm"
       GEOGRAPHY: "us"
       AZURE_CONTAINER_WEB_APP_NAME: "testalmapi"
-      GITHUB_PAT: "${{secrets.GH_PAT}}"
+      GITHUB_PAT: "${{secrets.GITHUB_PAT}}"
 
     steps:
     - name: Set env
